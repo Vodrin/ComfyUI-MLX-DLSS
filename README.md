@@ -1,8 +1,8 @@
 # ComfyUI-MLX-DLSS
 
-ComfyUI custom nodes for NVIDIA DLSS 5 Neural Rendering, Frame Generation, and RTX Video Super Resolution (VSR), ported from [iamwavecut/MLX-DLSS](https://github.com/iamwavecut/MLX-DLSS).
+ComfyUI custom nodes for NVIDIA DLSS 5 Neural Rendering, Frame Generation, and RTX Video Super Resolution (VSR), ported from [iamwavecut/MLX-DLSS](https://github.com/iamwavecut/MLX-DLSS). All credit to iamwavecut
 
-Runs directly in PyTorch with CUDA acceleration (also supports CPU and Apple Silicon MPS).
+Runs directly in PyTorch with CUDA acceleration (also supports CPU and Apple Silicon MPS(?) - untested). NO DX12 dependancies
 
 ## Features
 - **DLSS5 Neural Rendering (Image)**:
@@ -20,3 +20,5 @@ Place the following `.safetensors` files in `ComfyUI/models/dlss/`:
 1. `dlssnr-weights-logical.safetensors`: Recovered logical weights for DLSS 5 Neural Rendering.
 2. `framegen.safetensors`: DLSS Frame Generation weights.
 3. `vsr.safetensors`: RTX Video Super Resolution 1.8.2 weights.
+
+I can not share the above weights. You will need to obtain them yourself using the [iamwavecut/MLX-DLSS](https://github.com/iamwavecut/MLX-DLSS) repo
