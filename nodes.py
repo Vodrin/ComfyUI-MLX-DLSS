@@ -79,6 +79,7 @@ class DLSS5ImageNode:
                 "detail_radius": ("FLOAT", {"default": 4.0, "min": 0.5, "max": 64.0, "step": 0.5, "round": 0.1}),
                 "processing_scale": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 4.0, "step": 0.1, "round": 0.01}),
                 "enable_vsr": ("BOOLEAN", {"default": False, "tooltip": "Upscale image 2x using RTX Video Super Resolution"}),
+                "use_tensorrt": ("BOOLEAN", {"default": False, "label_on": "Enabled", "label_off": "Disabled", "tooltip": "Accelerate execution using cached TensorRT engine on NVIDIA GPUs"}),
                 "precision": (["fast", "reference"], {"default": "fast"}),
                 "nr_weights": (nr_files, {"default": "dlssnr-weights-logical.safetensors"}),
                 "vsr_weights": (vsr_files, {"default": "vsr.safetensors"}),
@@ -100,9 +101,10 @@ class DLSS5ImageNode:
         detail_radius: float,
         processing_scale: float,
         enable_vsr: bool,
-        precision: str,
-        nr_weights: str,
-        vsr_weights: str,
+        use_tensorrt: bool = False,
+        precision: str = "fast",
+        nr_weights: str = "dlssnr-weights-logical.safetensors",
+        vsr_weights: str = "vsr.safetensors",
     ) -> Tuple[torch.Tensor]:
         device = get_device()
         batch_size = image.shape[0]
@@ -148,7 +150,7 @@ class DLSS5ImageNode:
 
         # 2. Optional RTX VSR 2x Upscaling
         if enable_vsr:
-            vsr = get_vsr_resolver(vsr_weights, device=device, precision=precision)
+            vsr = get_vsr_resolver(vsr_weights, device=device, precision=precision, use_tensorrt=use_tensorrt)
             upscaled_list = []
             for i in range(output_tensor.shape[0]):
                 if comfy is not None:
@@ -190,6 +192,7 @@ class DLSS5VideoNode:
                 "framegen_factor": ([2, 3, 4, 8, 16], {"default": 2}),
                 "framegen_order": (["nr_first", "fg_first"], {"default": "nr_first"}),
                 "enable_vsr": ("BOOLEAN", {"default": False, "tooltip": "Upscale video 2x using RTX Video Super Resolution"}),
+                "use_tensorrt": ("BOOLEAN", {"default": False, "label_on": "Enabled", "label_off": "Disabled", "tooltip": "Accelerate execution using cached TensorRT engine on NVIDIA GPUs"}),
                 "precision": (["fast", "reference"], {"default": "fast"}),
                 "nr_weights": (nr_files, {"default": "dlssnr-weights-logical.safetensors"}),
                 "framegen_weights": (fg_files, {"default": "framegen.safetensors"}),
@@ -320,10 +323,11 @@ class DLSS5VideoNode:
         framegen_factor: int,
         framegen_order: str,
         enable_vsr: bool,
-        precision: str,
-        nr_weights: str,
-        framegen_weights: str,
-        vsr_weights: str,
+        use_tensorrt: bool = False,
+        precision: str = "fast",
+        nr_weights: str = "dlssnr-weights-logical.safetensors",
+        framegen_weights: str = "framegen.safetensors",
+        vsr_weights: str = "vsr.safetensors",
     ) -> Tuple[torch.Tensor]:
         device = get_device()
         num_frames = images.shape[0]
@@ -395,7 +399,7 @@ class DLSS5VideoNode:
                 current_frames = self._apply_framegen(current_frames, generator, factor=framegen_factor, pbar=pbar)
 
         if enable_vsr:
-            vsr = get_vsr_resolver(vsr_weights, device=device, precision=precision)
+            vsr = get_vsr_resolver(vsr_weights, device=device, precision=precision, use_tensorrt=use_tensorrt)
             current_frames = self._apply_vsr(current_frames, vsr, pbar=pbar)
 
         output_tensor = torch.from_numpy(np.stack(current_frames, axis=0)).to(torch.float32)

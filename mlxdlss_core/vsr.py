@@ -102,9 +102,19 @@ class VSRModel(nn.Module):
 class VideoSuperResolver:
     """High-level runner for RTX Video Super Resolution 2x upscaling."""
 
-    def __init__(self, weights: dict[str, torch.Tensor], *, device: str | torch.device = "auto", precision: str = "fast"):
+    def __init__(
+        self,
+        weights: dict[str, torch.Tensor],
+        *,
+        device: str | torch.device = "auto",
+        precision: str = "fast",
+        use_tensorrt: bool = False,
+        weights_path: str | pathlib.Path | None = None,
+    ):
         self.device = resolve_device(device)
         self.precision = precision
+        self.use_tensorrt = use_tensorrt
+        self.trt_runner = None
         self.model = VSRModel()
         self.model.load_safetensors_weights(weights)
         self.model.eval()
@@ -116,9 +126,23 @@ class VideoSuperResolver:
 
         self.model = self.model.to(self.device)
 
+        if use_tensorrt and self.device.type == "cuda" and weights_path:
+            try:
+                from .tensorrt_backend import is_tensorrt_available, get_or_build_vsr_trt_runner
+                if is_tensorrt_available():
+                    self.trt_runner = get_or_build_vsr_trt_runner(weights_path, self.device)
+            except Exception as e:
+                import warnings
+                warnings.warn(f"TensorRT initialization failed, falling back to PyTorch CUDA: {e}")
+
     @classmethod
-    def from_safetensors(cls, path: str | pathlib.Path, **kwargs: Any) -> "VideoSuperResolver":
-        return cls(load_file(str(path)), **kwargs)
+    def from_safetensors(
+        cls,
+        path: str | pathlib.Path,
+        use_tensorrt: bool = False,
+        **kwargs: Any,
+    ) -> "VideoSuperResolver":
+        return cls(load_file(str(path)), weights_path=path, use_tensorrt=use_tensorrt, **kwargs)
 
     @torch.no_grad()
     def upscale(self, rgb: torch.Tensor | np.ndarray) -> torch.Tensor:
@@ -162,7 +186,10 @@ class VideoSuperResolver:
 
         # Run network
         x = x.to(self.dtype)
-        out = self.model(x).to(torch.float32)  # [N, 48, H//2, W//2]
+        if self.trt_runner is not None:
+            out = self.trt_runner(x).to(torch.float32)
+        else:
+            out = self.model(x).to(torch.float32)  # [N, 48, H//2, W//2]
 
         # Depth-to-space: (N, 48, H//2, W//2) -> (N, 3, H*2, W*2)
         res_grid = out.view(N, 3, 4, 4, H // 2, W // 2)
