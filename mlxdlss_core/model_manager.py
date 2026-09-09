@@ -89,13 +89,14 @@ def get_frame_generator(
     weights_filename: str,
     device: str | torch.device = "auto",
     precision: str = "fast",
+    use_tensorrt: bool = False,
 ) -> FrameGenerator:
     path = resolve_model_path(weights_filename, "dlss")
     dev_str = str(device)
-    cache_key = (path, dev_str, precision)
+    cache_key = (path, dev_str, precision, use_tensorrt)
     if cache_key not in _FRAMEGEN_CACHE:
         _FRAMEGEN_CACHE[cache_key] = FrameGenerator.from_safetensors(
-            path, device=device, precision=precision
+            path, device=device, precision=precision, use_tensorrt=use_tensorrt
         )
     return _FRAMEGEN_CACHE[cache_key]
 

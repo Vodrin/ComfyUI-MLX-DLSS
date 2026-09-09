@@ -359,7 +359,9 @@ class DLSS5VideoNode:
 
         generator = None
         if enable_framegen and num_frames >= 2:
-            generator = get_frame_generator(framegen_weights, device=device, precision=precision)
+            generator = get_frame_generator(
+                framegen_weights, device=device, precision=precision, use_tensorrt=use_tensorrt
+            )
 
         # Execution order
         current_frames = frames_np

@@ -130,7 +130,14 @@ class FrameGenerator:
     ``precision`` is ``"reference"`` (float32) or ``"fast"`` (float16 on GPU devices).
     """
 
-    def __init__(self, weights: dict[str, torch.Tensor], *, device: str | torch.device = "auto", precision: str = "reference"):
+    def __init__(
+        self,
+        weights: dict[str, torch.Tensor],
+        *,
+        device: str | torch.device = "auto",
+        precision: str = "reference",
+        use_tensorrt: bool = False,
+    ):
         missing = [k for k in FRAMEGEN_TENSORS if k not in weights]
         if missing:
             raise ValueError(f"frame generation weights are missing {len(missing)} tensors, e.g. {missing[:3]}")
@@ -159,6 +166,18 @@ class FrameGenerator:
         self.block0 = block("block0", 3)
         self.block1 = block("block1", 2)
 
+        self.use_tensorrt = use_tensorrt
+        self.trt_runner = None
+        if use_tensorrt and self.device.type == "cuda" and precision == "fast":
+            try:
+                from .tensorrt_backend import get_or_build_framegen_trt_runner
+                self.trt_runner = get_or_build_framegen_trt_runner(weights, device=self.device)
+            except Exception as e:
+                import logging
+                logging.getLogger("vodbot.dlss").warning(
+                    f"TensorRT FrameGen acceleration unavailable, falling back to PyTorch CUDA: {e}"
+                )
+
     @classmethod
     def from_safetensors(cls, path: str | pathlib.Path, **kwargs: Any) -> "FrameGenerator":
         from safetensors.torch import load_file
@@ -177,6 +196,29 @@ class FrameGenerator:
         zero = torch.zeros_like(err)
         phases = torch.as_tensor(t, device=a.device, dtype=a.dtype).reshape(-1, 1, 1, 1)
         phase = torch.zeros_like(err) + phases
+
+        if getattr(self, "trt_runner", None) is not None:
+            try:
+                batch_size = a.shape[0]
+                max_batch = 8
+                if batch_size > max_batch:
+                    chunks = []
+                    for start in range(0, batch_size, max_batch):
+                        end = min(start + max_batch, batch_size)
+                        c_a = a[start:end]
+                        c_b = b[start:end]
+                        c_p = phase[start:end]
+                        c_out = self.trt_runner({"a": c_a, "b": c_b, "phase": c_p})
+                        chunks.append(c_out)
+                    return torch.cat(chunks, 0)
+                else:
+                    return self.trt_runner({"a": a, "b": b, "phase": phase})
+            except Exception as e:
+                import logging
+                logging.getLogger("vodbot.dlss").warning(
+                    f"TensorRT FrameGen execution failed, falling back to PyTorch: {e}"
+                )
+
         cand_a = torch.cat([a, err], 1)
         cand_b = torch.cat([b, err], 1)
         f0, m0, r0 = self.block0(torch.cat([cand_a, cand_b, zero, phase], 1))
