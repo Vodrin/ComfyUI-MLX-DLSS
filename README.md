@@ -13,7 +13,6 @@ Runs directly in PyTorch with CUDA acceleration (also supports CPU and Apple Sil
   - Temporal stability with dense optical flow and scene-cut detection.
   - DLSS Frame Generation (`enable_framegen`) with factors ×2, ×3, ×4, ×8, ×16 and configurable order (`nr_first` or `fg_first`).
   - Toggle 2× upscaling via RTX Video Super Resolution (`enable_vsr`).
-  - Native ComfyUI progress bar updates and interruption support.
 
 ## Models & Weights
 Place the following `.safetensors` files in `ComfyUI/models/dlss/`:
@@ -21,4 +20,4 @@ Place the following `.safetensors` files in `ComfyUI/models/dlss/`:
 2. `framegen.safetensors`: DLSS Frame Generation weights.
 3. `vsr.safetensors`: RTX Video Super Resolution 1.8.2 weights.
 
-I can not share the above weights. You will need to obtain them yourself using the [iamwavecut/MLX-DLSS](https://github.com/iamwavecut/MLX-DLSS) repo
+## I can not share the above weights. You will need to obtain them yourself using the [iamwavecut/MLX-DLSS](https://github.com/iamwavecut/MLX-DLSS) repo
