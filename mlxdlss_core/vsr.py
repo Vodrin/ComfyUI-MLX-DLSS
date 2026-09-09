@@ -186,9 +186,16 @@ class VideoSuperResolver:
 
         # Run network
         x = x.to(self.dtype)
+        out = None
         if self.trt_runner is not None:
-            out = self.trt_runner(x).to(torch.float32)
-        else:
+            try:
+                out = self.trt_runner(x).to(torch.float32)
+            except Exception as e:
+                import logging
+                logging.getLogger("vodbot.dlss").warning(
+                    f"TensorRT VSR upscale failed, falling back to PyTorch CUDA: {e}"
+                )
+        if out is None:
             out = self.model(x).to(torch.float32)  # [N, 48, H//2, W//2]
 
         # Depth-to-space: (N, 48, H//2, W//2) -> (N, 3, H*2, W*2)

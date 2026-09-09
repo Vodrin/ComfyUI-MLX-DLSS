@@ -31,6 +31,8 @@ except (ImportError, ValueError):
         get_vsr_resolver,
     )
 
+PROFILE_CHOICES = list(PROFILES.keys()) + ["disabled"]
+
 # Register "dlss" models folder with ComfyUI
 if folder_paths is not None:
     models_dir = folder_paths.models_dir
@@ -72,7 +74,7 @@ class DLSS5ImageNode:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "profile": (list(PROFILES.keys()), {"default": "standard"}),
+                "profile": (PROFILE_CHOICES, {"default": "standard"}),
                 "intensity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05, "round": 0.001}),
                 "detail_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0, "step": 0.1, "round": 0.01}),
                 "colour_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1, "round": 0.01}),
@@ -111,13 +113,13 @@ class DLSS5ImageNode:
 
         # 1. DLSS5 Neural Rendering
         pipeline = None
-        if intensity > 0:
+        if intensity > 0 and profile != "disabled":
             pipeline = get_neural_rendering_pipeline(nr_weights, device=device, precision=precision)
 
         processed_images = []
         pbar = None
         if comfy is not None:
-            total_steps = batch_size * (2 if enable_vsr and intensity > 0 else 1)
+            total_steps = batch_size * (2 if enable_vsr and intensity > 0 and profile != "disabled" else 1)
             pbar = comfy.utils.ProgressBar(total_steps)
 
         for i in range(batch_size):
@@ -127,7 +129,7 @@ class DLSS5ImageNode:
             frame_tensor = image[i]
             frame_np = frame_tensor.cpu().numpy().astype(np.float32)
 
-            if pipeline is not None and intensity > 0:
+            if pipeline is not None and intensity > 0 and profile != "disabled":
                 result = pipeline.enhance(
                     frame_np,
                     profile=profile,
@@ -179,7 +181,7 @@ class DLSS5VideoNode:
         return {
             "required": {
                 "images": ("IMAGE",),
-                "profile": (list(PROFILES.keys()), {"default": "standard"}),
+                "profile": (PROFILE_CHOICES, {"default": "standard"}),
                 "intensity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05, "round": 0.001}),
                 "detail_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0, "step": 0.1, "round": 0.01}),
                 "colour_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1, "round": 0.01}),
@@ -220,7 +222,7 @@ class DLSS5VideoNode:
         scene_cut_threshold: float,
         pbar=None,
     ) -> list[np.ndarray]:
-        if intensity <= 0 or pipeline is None:
+        if intensity <= 0 or pipeline is None or profile == "disabled":
             return frames_np
 
         output_frames = []
@@ -337,7 +339,7 @@ class DLSS5VideoNode:
 
         # Estimate total progress bar steps
         total_steps = 0
-        if intensity > 0:
+        if intensity > 0 and profile != "disabled":
             total_steps += num_frames
         if enable_framegen and num_frames >= 2:
             total_steps += num_frames - 1
@@ -354,7 +356,7 @@ class DLSS5VideoNode:
 
         # Pipelines
         pipeline = None
-        if intensity > 0:
+        if intensity > 0 and profile != "disabled":
             pipeline = get_neural_rendering_pipeline(nr_weights, device=device, precision=precision)
 
         generator = None
