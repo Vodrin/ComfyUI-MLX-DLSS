@@ -5,7 +5,6 @@ import os
 from typing import Tuple
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 try:
     import comfy.model_management
@@ -86,10 +85,6 @@ class DLSS5ImageNode:
                 "precision": (["fast", "reference"], {"default": "fast"}),
                 "nr_weights": (nr_files, {"default": "dlssnr-weights-logical.safetensors"}),
                 "vsr_weights": (vsr_files, {"default": "vsr.safetensors"}),
-            },
-            "optional": {
-                "target_width": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 8}),
-                "target_height": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 8}),
             }
         }
 
@@ -112,8 +107,6 @@ class DLSS5ImageNode:
         precision: str = "fast",
         nr_weights: str = "dlssnr-weights-logical.safetensors",
         vsr_weights: str = "vsr.safetensors",
-        target_width: int = 0,
-        target_height: int = 0,
     ) -> Tuple[torch.Tensor]:
         device = get_device()
         batch_size = image.shape[0]
@@ -175,16 +168,6 @@ class DLSS5ImageNode:
                     pbar.update(1)
             output_tensor = torch.cat(upscaled_list, dim=0)
 
-        # 3. Optional Scaling to Target Resolution
-        target_w = int(target_width or 0)
-        target_h = int(target_height or 0)
-        if target_w > 0 and target_h > 0:
-            cur_h, cur_w = output_tensor.shape[1], output_tensor.shape[2]
-            if cur_w != target_w or cur_h != target_h:
-                t = output_tensor.permute(0, 3, 1, 2)
-                t = F.interpolate(t, size=(target_h, target_w), mode="bicubic", align_corners=False)
-                output_tensor = t.permute(0, 2, 3, 1)
-
         return (output_tensor.clamp(0.0, 1.0),)
 
 
@@ -218,10 +201,6 @@ class DLSS5VideoNode:
                 "nr_weights": (nr_files, {"default": "dlssnr-weights-logical.safetensors"}),
                 "framegen_weights": (fg_files, {"default": "framegen.safetensors"}),
                 "vsr_weights": (vsr_files, {"default": "vsr.safetensors"}),
-            },
-            "optional": {
-                "target_width": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 8}),
-                "target_height": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 8}),
             }
         }
 
@@ -353,8 +332,6 @@ class DLSS5VideoNode:
         nr_weights: str = "dlssnr-weights-logical.safetensors",
         framegen_weights: str = "framegen.safetensors",
         vsr_weights: str = "vsr.safetensors",
-        target_width: int = 0,
-        target_height: int = 0,
     ) -> Tuple[torch.Tensor]:
         device = get_device()
         num_frames = images.shape[0]
@@ -434,15 +411,4 @@ class DLSS5VideoNode:
             current_frames = self._apply_vsr(current_frames, vsr, pbar=pbar)
 
         output_tensor = torch.from_numpy(np.stack(current_frames, axis=0)).to(torch.float32)
-
-        # Optional Scaling to Target Resolution
-        target_w = int(target_width or 0)
-        target_h = int(target_height or 0)
-        if target_w > 0 and target_h > 0:
-            cur_h, cur_w = output_tensor.shape[1], output_tensor.shape[2]
-            if cur_w != target_w or cur_h != target_h:
-                t = output_tensor.permute(0, 3, 1, 2)
-                t = F.interpolate(t, size=(target_h, target_w), mode="bicubic", align_corners=False)
-                output_tensor = t.permute(0, 2, 3, 1)
-
         return (output_tensor.clamp(0.0, 1.0),)

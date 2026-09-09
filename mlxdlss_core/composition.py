@@ -19,7 +19,7 @@ def compose_head(
     head = np.asarray(head, dtype=np.float32)
     color = np.asarray(color, dtype=np.float32)
     if head.shape[:2] != color.shape[:2] or head.shape[2] < 3 or color.shape[2] != 3:
-        raise ValueError("head and colour must share height and width")
+        raise ValueError(f"head and colour must share height and width: head={head.shape}, color={color.shape}")
     residual = half(head[..., :3]) * np.float32(0.25)
     predicted = np.clip(color + residual, 0, 1)
     blend = np.float32(intensity)

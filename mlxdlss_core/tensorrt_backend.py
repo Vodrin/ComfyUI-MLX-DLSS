@@ -112,11 +112,13 @@ class TensorRTEngineRunner:
             return 0
 
         # Try matching against profile bounds dynamically
-        if self.profile_bounds and len(self.profile_bounds) == self.num_profiles:
+        if self.profile_bounds:
             for i, (min_s, opt_s, max_s) in enumerate(self.profile_bounds):
-                if len(input_shape) == len(max_s) and all(s <= m for s, m in zip(input_shape, max_s)):
+                if len(input_shape) == len(max_s) and all(s <= m for s, m in zip(input_shape, max_s)) and all(s >= mn for s, mn in zip(input_shape, min_s)):
                     return i
-            return self.num_profiles - 1
+            raise ValueError(
+                f"Input shape {input_shape} does not fit within any TensorRT profile bounds (bounds: {self.profile_bounds})"
+            )
 
         # Fallback to dimension heuristic
         h, w = input_shape[-2], input_shape[-1]
@@ -151,7 +153,11 @@ class TensorRTEngineRunner:
         for name, tensor in inputs_dict.items():
             if not tensor.is_cuda:
                 tensor = tensor.to(self.device)
-            context.set_input_shape(name, tuple(tensor.shape))
+            success = context.set_input_shape(name, tuple(tensor.shape))
+            if not success:
+                raise ValueError(
+                    f"TensorRT failed to set input shape {tuple(tensor.shape)} on profile {profile_idx}"
+                )
             context.set_tensor_address(name, tensor.data_ptr())
 
         # Determine output tensors to allocate and bind
@@ -165,6 +171,10 @@ class TensorRTEngineRunner:
         output_tensors = {}
         for out_name in target_outputs:
             out_shape = tuple(context.get_tensor_shape(out_name))
+            if any(d <= 0 for d in out_shape):
+                raise ValueError(
+                    f"TensorRT returned invalid output shape {out_shape} for tensor '{out_name}'"
+                )
             out_dtype_trt = self.engine.get_tensor_dtype(out_name)
             torch_dtype = torch.float16 if out_dtype_trt == trt.DataType.HALF else torch.float32
             out_tensor = torch.empty(out_shape, device=self.device, dtype=torch_dtype)
