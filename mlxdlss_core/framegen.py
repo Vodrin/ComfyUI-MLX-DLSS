@@ -134,6 +134,12 @@ class FrameGenerator:
         missing = [k for k in FRAMEGEN_TENSORS if k not in weights]
         if missing:
             raise ValueError(f"frame generation weights are missing {len(missing)} tensors, e.g. {missing[:3]}")
+        for k in FRAMEGEN_TENSORS:
+            if not torch.isfinite(weights[k]).all():
+                raise ValueError(
+                    f"Frame generation tensor '{k}' contains NaN or Inf values. "
+                    f"Ensure weights were cleanly extracted from libnvidia-ngx-dlssg.so.310.7.0 (Linux ELF), not nvngx_dlssg.dll."
+                )
         self.device = resolve_device(device)
         if precision not in ("reference", "fast"):
             raise ValueError("precision must be 'reference' or 'fast'")
