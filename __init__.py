@@ -2,6 +2,7 @@
 
 Provides DLSS5 Neural Rendering, DLSS Frame Generation, and RTX Video Super Resolution (VSR)
 ported from https://github.com/iamwavecut/MLX-DLSS.
+"""
 try:
     import tensorrt
 except Exception:
