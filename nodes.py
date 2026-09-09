@@ -114,7 +114,9 @@ class DLSS5ImageNode:
         # 1. DLSS5 Neural Rendering
         pipeline = None
         if intensity > 0 and profile != "disabled":
-            pipeline = get_neural_rendering_pipeline(nr_weights, device=device, precision=precision)
+            pipeline = get_neural_rendering_pipeline(
+                nr_weights, device=device, precision=precision, use_tensorrt=use_tensorrt
+            )
 
         processed_images = []
         pbar = None
@@ -357,7 +359,9 @@ class DLSS5VideoNode:
         # Pipelines
         pipeline = None
         if intensity > 0 and profile != "disabled":
-            pipeline = get_neural_rendering_pipeline(nr_weights, device=device, precision=precision)
+            pipeline = get_neural_rendering_pipeline(
+                nr_weights, device=device, precision=precision, use_tensorrt=use_tensorrt
+            )
 
         generator = None
         if enable_framegen and num_frames >= 2:

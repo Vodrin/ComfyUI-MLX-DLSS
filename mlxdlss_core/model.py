@@ -82,6 +82,8 @@ def e4m3_round_trip(value: torch.Tensor, fast: bool | None = None) -> torch.Tens
     if fast is None:
         fast = FAST_MODE
     if torch.jit.is_tracing():
+        if fast or value.dtype == torch.float16:
+            return value.clamp(-448.0, 448.0)
         magnitude = torch.minimum(value.abs(), torch.full_like(value, 448.0))
         normal_floor = torch.full_like(magnitude, 2**-6)
         exponent = torch.floor(torch.log2(torch.maximum(magnitude, normal_floor)))

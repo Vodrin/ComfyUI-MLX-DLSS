@@ -113,9 +113,8 @@ class TensorRTEngineRunner:
 
         # Try matching against profile bounds dynamically
         if self.profile_bounds and len(self.profile_bounds) == self.num_profiles:
-            b, h, w = input_shape[0], input_shape[-2], input_shape[-1]
             for i, (min_s, opt_s, max_s) in enumerate(self.profile_bounds):
-                if b <= max_s[0] and h <= max_s[-2] and w <= max_s[-1]:
+                if len(input_shape) == len(max_s) and all(s <= m for s, m in zip(input_shape, max_s)):
                     return i
             return self.num_profiles - 1
 
@@ -425,6 +424,104 @@ def get_or_build_framegen_trt_runner(
 
     if not engine_file.is_file():
         build_framegen_engine(weights_path_or_dict, engine_file, device)
+
+    runner = TensorRTEngineRunner(engine_file, device=device)
+    _TRT_RUNNER_CACHE[cache_key] = runner
+    return runner
+
+
+def build_nr_engine(
+    weights_path_or_dict: str | pathlib.Path | dict[str, torch.Tensor],
+    engine_path: str | pathlib.Path,
+    device: torch.device,
+) -> str:
+    """Exports NeuralRenderingModel to dynamic ONNX and compiles a TensorRT FP16 engine."""
+    import tensorrt as trt
+    from safetensors.torch import load_file
+    from .model import NeuralRenderingModel
+
+    if isinstance(weights_path_or_dict, (str, pathlib.Path)):
+        weights = load_file(str(weights_path_or_dict))
+    else:
+        weights = weights_path_or_dict
+
+    old_chunk = os.environ.get("MLXDLSS_TORCH_CHUNK_TOKENS", None)
+    os.environ["MLXDLSS_TORCH_CHUNK_TOKENS"] = "0"
+    try:
+        model = NeuralRenderingModel(weights).eval().to(device=device, dtype=torch.float16)
+
+        logger = trt.Logger(trt.Logger.INFO)
+        builder = trt.Builder(logger)
+        network = builder.create_network()
+        parser = trt.OnnxParser(network, logger)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            onnx_path = os.path.join(tmpdir, "nr.onnx")
+            dummy_in = torch.randn(1, 320, 320, 16, device=device, dtype=torch.float16)
+
+            torch.onnx.export(
+                model,
+                dummy_in,
+                onnx_path,
+                input_names=["input"],
+                output_names=["output"],
+                dynamic_axes={
+                    "input": {0: "batch", 1: "height", 2: "width"},
+                    "output": {0: "batch", 1: "height", 2: "width"},
+                },
+                opset_version=18,
+                do_constant_folding=True,
+                dynamo=False,
+            )
+
+            with open(onnx_path, "rb") as f:
+                if not parser.parse(f.read()):
+                    errors = [str(parser.get_error(i)) for i in range(parser.num_errors)]
+                    raise RuntimeError(f"Failed to parse Neural Rendering ONNX: {errors}")
+    finally:
+        if old_chunk is not None:
+            os.environ["MLXDLSS_TORCH_CHUNK_TOKENS"] = old_chunk
+        else:
+            os.environ.pop("MLXDLSS_TORCH_CHUNK_TOKENS", None)
+
+    config = builder.create_builder_config()
+    # Allow TensorRT ample workspace for 71-block transformer activations (requires ~11GB)
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 16 * (1024 ** 3))
+
+    # Profile 0: Dynamic tier covering vendor extents (320x320 up to 1024x1024, opt 512x512)
+    p0 = builder.create_optimization_profile()
+    p0.set_shape("input", min=(1, 320, 320, 16), opt=(1, 512, 512, 16), max=(1, 1024, 1024, 16))
+    config.add_optimization_profile(p0)
+
+    plan = builder.build_serialized_network(network, config)
+    if plan is None:
+        raise RuntimeError("TensorRT failed to build serialized network for Neural Rendering")
+
+    with open(str(engine_path), "wb") as f:
+        f.write(plan)
+
+    return str(engine_path)
+
+
+def get_or_build_nr_trt_runner(
+    weights_path_or_dict: str | pathlib.Path | dict[str, torch.Tensor],
+    device: torch.device,
+) -> TensorRTEngineRunner:
+    """Retrieve cached TensorRT runner for Neural Rendering or build and cache to disk."""
+    if not is_tensorrt_available():
+        raise RuntimeError("TensorRT is not available or not installed in the current environment.")
+
+    dev_tag = get_device_tag(device)
+    cache_key = f"nr_{dev_tag}"
+
+    if cache_key in _TRT_RUNNER_CACHE:
+        return _TRT_RUNNER_CACHE[cache_key]
+
+    cache_dir = get_trt_cache_dir()
+    engine_file = cache_dir / f"nr_{dev_tag}_fp16.engine"
+
+    if not engine_file.is_file():
+        build_nr_engine(weights_path_or_dict, engine_file, device)
 
     runner = TensorRTEngineRunner(engine_file, device=device)
     _TRT_RUNNER_CACHE[cache_key] = runner

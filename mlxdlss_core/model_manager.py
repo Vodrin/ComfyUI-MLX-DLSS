@@ -74,13 +74,14 @@ def get_neural_rendering_pipeline(
     weights_filename: str,
     device: str | torch.device = "auto",
     precision: str = "fast",
+    use_tensorrt: bool = False,
 ) -> NeuralRenderingPipeline:
     path = resolve_model_path(weights_filename, "dlss")
     dev_str = str(device)
-    cache_key = (path, dev_str, precision)
+    cache_key = (path, dev_str, precision, use_tensorrt)
     if cache_key not in _PIPELINE_CACHE:
         _PIPELINE_CACHE[cache_key] = NeuralRenderingPipeline.from_safetensors(
-            path, device=device, precision=precision
+            path, device=device, precision=precision, use_tensorrt=use_tensorrt
         )
     return _PIPELINE_CACHE[cache_key]
 

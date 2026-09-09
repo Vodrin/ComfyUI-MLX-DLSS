@@ -80,12 +80,21 @@ class NeuralRenderingPipeline:
     runs the same graph in float16 on GPU devices.
     """
 
-    def __init__(self, weights: dict[str, torch.Tensor], *, device: str | torch.device = "auto", precision: str = "reference"):
+    def __init__(
+        self,
+        weights: dict[str, torch.Tensor],
+        *,
+        device: str | torch.device = "auto",
+        precision: str = "reference",
+        use_tensorrt: bool = False,
+        weights_path: str | pathlib.Path | None = None,
+    ):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         validate_weights(weights)
         self.device = resolve_device(device)
         self.precision = precision
+        self.use_tensorrt = use_tensorrt
         self.model = reference.NeuralRenderingModel(weights).eval()
         self.dtype = torch.float32
         if precision == "fast":
@@ -98,9 +107,34 @@ class NeuralRenderingPipeline:
                 self.model = self.model.to(torch.float16)
         self.model = self.model.to(self.device)
 
+        self.trt_runner = None
+        if self.use_tensorrt and self.device.type == "cuda":
+            try:
+                from .tensorrt_backend import get_or_build_nr_trt_runner
+                target_weights = weights_path if weights_path is not None else weights
+                self.trt_runner = get_or_build_nr_trt_runner(target_weights, device=self.device)
+            except Exception as e:
+                import logging
+                logging.getLogger("vodbot.dlss").warning(
+                    f"TensorRT Neural Rendering acceleration unavailable, falling back to PyTorch: {e}"
+                )
+
     @classmethod
-    def from_safetensors(cls, path: str | pathlib.Path, *, device: str | torch.device = "auto", precision: str = "reference") -> "NeuralRenderingPipeline":
-        return cls(load_weights(path), device=device, precision=precision)
+    def from_safetensors(
+        cls,
+        path: str | pathlib.Path,
+        *,
+        device: str | torch.device = "auto",
+        precision: str = "reference",
+        use_tensorrt: bool = False,
+    ) -> "NeuralRenderingPipeline":
+        return cls(
+            load_weights(path),
+            device=device,
+            precision=precision,
+            use_tensorrt=use_tensorrt,
+            weights_path=path,
+        )
 
     @torch.no_grad()
     def run_features(self, features: np.ndarray) -> np.ndarray:
@@ -116,7 +150,18 @@ class NeuralRenderingPipeline:
         if features.shape[1] % 64 or features.shape[2] % 64:
             raise ValueError("feature extent must be a multiple of 64 (use NetworkGeometry.vendor_aligned)")
         tensor = torch.from_numpy(np.ascontiguousarray(features)).to(self.device, self.dtype)
-        head = self.model(tensor)
+        if self.trt_runner is not None:
+            try:
+                trt_in = tensor.to(torch.float16) if tensor.dtype != torch.float16 else tensor
+                head = self.trt_runner(trt_in, input_name="input", output_name="output")
+            except Exception as e:
+                import logging
+                logging.getLogger("vodbot.dlss").warning(
+                    f"TensorRT Neural Rendering execution failed, falling back to PyTorch: {e}"
+                )
+                head = self.model(tensor)
+        else:
+            head = self.model(tensor)
         return head.to(torch.float32).cpu().numpy()
 
     def _controls(self, profile, normalized_style, local_tone_strength, local_structure_strength):
