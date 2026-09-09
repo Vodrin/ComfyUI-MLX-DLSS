@@ -517,22 +517,13 @@ def get_or_build_nr_trt_runner(
     weights_path_or_dict: str | pathlib.Path | dict[str, torch.Tensor],
     device: torch.device,
 ) -> TensorRTEngineRunner:
-    """Retrieve cached TensorRT runner for Neural Rendering or build and cache to disk."""
-    if not is_tensorrt_available():
-        raise RuntimeError("TensorRT is not available or not installed in the current environment.")
-
-    dev_tag = get_device_tag(device)
-    cache_key = f"nr_{dev_tag}"
-
-    if cache_key in _TRT_RUNNER_CACHE:
-        return _TRT_RUNNER_CACHE[cache_key]
-
-    cache_dir = get_trt_cache_dir()
-    engine_file = cache_dir / f"nr_{dev_tag}_fp16.engine"
-
-    if not engine_file.is_file():
-        build_nr_engine(weights_path_or_dict, engine_file, device)
-
-    runner = TensorRTEngineRunner(engine_file, device=device)
-    _TRT_RUNNER_CACHE[cache_key] = runner
-    return runner
+    """TensorRT for Neural Rendering is disabled due to dynamic 71-block window tiling constraints.
+    
+    Static ONNX tracing bakes fixed window dimensions derived from dummy shapes, which
+    causes spatial degradation on larger resolutions. Native PyTorch CUDA executes dynamically
+    in ~0.4s and should be used instead.
+    """
+    raise RuntimeError(
+        "TensorRT is not supported for Neural Rendering (dynamic 71-block window transformer); "
+        "native PyTorch CUDA provides full-image fidelity in ~0.4s."
+    )
