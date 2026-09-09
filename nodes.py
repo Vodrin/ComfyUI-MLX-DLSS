@@ -286,16 +286,22 @@ class DLSS5VideoNode:
         vsr,
         pbar=None,
     ) -> list[np.ndarray]:
+        if not frames_np:
+            return frames_np
+        batch_size = 4
         out_frames = []
-        for frame in frames_np:
+        for start in range(0, len(frames_np), batch_size):
+            chunk = frames_np[start : start + batch_size]
             if comfy is not None:
                 comfy.model_management.throw_exception_if_processing_interrupted()
-            tensor = torch.from_numpy(np.ascontiguousarray(frame)).permute(2, 0, 1)[None]  # [1, 3, H, W]
-            up = vsr.upscale(tensor)  # [1, 3, 2H, 2W]
-            up_np = up.squeeze(0).permute(1, 2, 0).to(torch.float32).cpu().numpy()  # [2H, 2W, 3]
-            out_frames.append(np.clip(up_np, 0.0, 1.0))
-            if pbar is not None:
-                pbar.update(1)
+            tensors = [torch.from_numpy(np.ascontiguousarray(f)).permute(2, 0, 1) for f in chunk]
+            batch_tensor = torch.stack(tensors, dim=0)  # [B, 3, H, W]
+            up = vsr.upscale(batch_tensor)  # [B, 3, 2H, 2W]
+            up_np = up.permute(0, 2, 3, 1).to(torch.float32).clamp(0.0, 1.0).cpu().numpy()
+            for b in range(up_np.shape[0]):
+                out_frames.append(up_np[b])
+                if pbar is not None:
+                    pbar.update(1)
         return out_frames
 
     def process_video(

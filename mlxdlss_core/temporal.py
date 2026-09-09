@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 
 from .composition import compose_detail, compose_head, resample
 from .motion_quality import MotionEstimate, assess_motion, luma, validate_map
@@ -64,6 +66,26 @@ def _catmull_coordinates(normalized: np.ndarray, dimension: int):
     )
 
 
+def _torch_catmull_coordinates(norm: torch.Tensor, dim: int):
+    pixel = norm * float(dim) - 0.5
+    base_idx = torch.floor(pixel)
+    t = (pixel - base_idx).clamp(0.0, 1.0)
+    sq = t * t
+    cube = sq * t
+    w0 = -0.5 * t + sq - 0.5 * cube
+    w1 = 1.0 - 2.5 * sq + 1.5 * cube
+    w2 = 0.5 * t + 2.0 * sq - 1.5 * cube
+    w3 = -0.5 * sq + 0.5 * cube
+    g = w1 + w2
+    base = base_idx + 0.5
+    lower = 0.5
+    upper = float(dim) - 0.5
+    c0 = (base - 1.0).clamp(lower, upper)
+    cm = (base + w2 / g).clamp(lower, upper)
+    c3 = (base + 2.0).clamp(lower, upper)
+    return c0, cm, c3, w0, w3, g
+
+
 def _sample_linear(image: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Bilinear sample of (H, W, C) at pixel-centre coordinates (x, y), clamped to the edge."""
     height, width = image.shape[:2]
@@ -76,8 +98,58 @@ def _sample_linear(image: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarra
     return top * (1 - ty) + bottom * ty
 
 
-def sample_history(history: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
+def sample_history(history: np.ndarray | torch.Tensor, u: np.ndarray | torch.Tensor, v: np.ndarray | torch.Tensor, device=None) -> np.ndarray | torch.Tensor:
     """Five-tap Catmull-Rom approximation (cross of bilinear taps) at normalised coordinates (u, v)."""
+    return_numpy = isinstance(history, np.ndarray)
+
+    # GPU accelerated path using PyTorch F.grid_sample
+    if torch.cuda.is_available():
+        if device is None:
+            device = torch.device("cuda")
+
+        if isinstance(history, np.ndarray):
+            h_tensor = torch.from_numpy(history).permute(2, 0, 1)[None].to(device, torch.float32)
+        else:
+            h_tensor = history.to(device, torch.float32)
+            if h_tensor.ndim == 3:
+                h_tensor = h_tensor.permute(2, 0, 1)[None]
+
+        _, _, H, W = h_tensor.shape
+
+        u_t = torch.as_tensor(u, device=device, dtype=torch.float32)
+        v_t = torch.as_tensor(v, device=device, dtype=torch.float32)
+
+        x0, xm, x3, xw0, xw3, xg = _torch_catmull_coordinates(u_t, W)
+        y0, ym, y3, yw0, yw3, yg = _torch_catmull_coordinates(v_t, H)
+
+        def to_grid(gx, gy):
+            nx = (gx / float(W)) * 2.0 - 1.0
+            ny = (gy / float(H)) * 2.0 - 1.0
+            return torch.stack([nx, ny], dim=-1)[None]
+
+        w_list = [xw0 * yg, xg * yw0, xg * yg, xg * yw3, xw3 * yg]
+        grid_list = [
+            to_grid(x0, ym),
+            to_grid(xm, y0),
+            to_grid(xm, ym),
+            to_grid(xm, y3),
+            to_grid(x3, ym),
+        ]
+
+        total = None
+        sum_w = sum(w_list)[..., None]
+        for w_tap, grid in zip(w_list, grid_list):
+            sampled = F.grid_sample(h_tensor, grid, mode="bilinear", padding_mode="border", align_corners=False)
+            sampled = sampled.squeeze(0).permute(1, 2, 0)
+            tap_weighted = sampled * w_tap[..., None]
+            total = tap_weighted if total is None else total + tap_weighted
+
+        res = total / sum_w
+        if return_numpy:
+            return res.cpu().numpy()
+        return res
+
+    # Fallback to CPU NumPy if CUDA is not available
     history = np.asarray(history, dtype=np.float32)
     height, width = history.shape[:2]
     x_outer0, x_middle, x_outer3, x_w0, x_w3, x_g = _catmull_coordinates(np.asarray(u, dtype=np.float32), width)

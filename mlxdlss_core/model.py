@@ -52,6 +52,7 @@ def recovered_window_origin(block_index: int) -> tuple[int, int]:
 # into rare one-quantum flips (max 2e-4 on the output in the tests).
 # ``MLXDLSS_TORCH_CHUNK_TOKENS=0`` disables it.
 CHUNK_TOKENS = int(os.environ.get("MLXDLSS_TORCH_CHUNK_TOKENS", str(1 << 18)))
+FAST_MODE = os.environ.get("MLXDLSS_FAST_MODE", "1") == "1"
 
 
 
@@ -72,12 +73,14 @@ def quadratic_gate_activation(value: torch.Tensor) -> torch.Tensor:
     ).to(value.dtype)
 
 
-def e4m3_round_trip(value: torch.Tensor) -> torch.Tensor:
+def e4m3_round_trip(value: torch.Tensor, fast: bool | None = None) -> torch.Tensor:
     """Round to the nearest E4M3 value (round-half-even, saturating at 448).
 
     CPU and CUDA use PyTorch's float8 conversion; tracing (Core ML export) and
     devices without float8 support (MPS) use an exact bit-level equivalent.
     """
+    if fast is None:
+        fast = FAST_MODE
     if torch.jit.is_tracing():
         magnitude = torch.minimum(value.abs(), torch.full_like(value, 448.0))
         normal_floor = torch.full_like(magnitude, 2**-6)
@@ -90,8 +93,9 @@ def e4m3_round_trip(value: torch.Tensor) -> torch.Tensor:
         )
         rounded = torch.round(magnitude / step) * step
         return torch.where(value < 0, -rounded, rounded)
-    if value.device.type in _FLOAT8_CAST_DEVICES and value.dtype == torch.float32:
-        return value.clamp(-448, 448).to(torch.float8_e4m3fn).to(value.dtype)
+    if value.device.type in _FLOAT8_CAST_DEVICES:
+        if value.dtype == torch.float32 or fast or value.dtype == torch.float16:
+            return value.clamp(-448, 448).to(torch.float8_e4m3fn).to(value.dtype)
     if CHUNK_TOKENS > 0 and value.numel() > 8 * CHUNK_TOKENS:
         # The bit-level path builds several int32/float32 temporaries per element;
         # on a whole frame that is a multi-GB spike, so publish in slices.
@@ -157,14 +161,16 @@ def _per_token(function, value: torch.Tensor) -> torch.Tensor:
     return torch.cat(parts, dim=0).reshape(*value.shape[:-1], parts[0].shape[-1])
 
 
-def vendor_approximate_softmax(value: torch.Tensor) -> torch.Tensor:
+def vendor_approximate_softmax(value: torch.Tensor, fast: bool | None = None) -> torch.Tensor:
     """Reproduce the fused kernels' half bit-affine softmax approximation."""
+    if fast is None:
+        fast = FAST_MODE
     if value.ndim == 0 or value.shape[-1] <= 0:
         raise ValueError("vendor softmax expects a non-empty row")
     if value.shape[-1] % 2:
         raise ValueError("vendor softmax expects an even token count")
-    if torch.jit.is_tracing():
-        return e4m3_round_trip(value.softmax(dim=-1))
+    if fast or torch.jit.is_tracing():
+        return e4m3_round_trip(value.softmax(dim=-1), fast=fast)
     affine = (value.to(torch.float16).to(torch.float32) * 0.044921875 + 1.30078125).to(
         torch.float16
     )
@@ -181,7 +187,7 @@ def vendor_approximate_softmax(value: torch.Tensor) -> torch.Tensor:
     totals = weights.sum(dim=-1, keepdim=True, dtype=torch.float16)
     reciprocal = totals.to(torch.float32).reciprocal().to(torch.float16)
     probabilities = (weights * reciprocal).to(value.dtype)
-    return e4m3_round_trip(probabilities)
+    return e4m3_round_trip(probabilities, fast=fast)
 
 
 def cosine_residual(
@@ -211,10 +217,12 @@ def _half_fma(
     ).to(torch.float16)
 
 
-def vendor_cosine_normalize(value: torch.Tensor) -> torch.Tensor:
+def vendor_cosine_normalize(value: torch.Tensor, fast: bool | None = None) -> torch.Tensor:
     """Apply the fused kernels' half fragment-tree cosine normalization."""
+    if fast is None:
+        fast = FAST_MODE
     half = value.to(torch.float16)
-    if half.shape[-1] != 32:
+    if fast or half.shape[-1] != 32 or value.device.type == "cuda":
         squared_norm = half.square().sum(
             dim=-1,
             keepdim=True,
