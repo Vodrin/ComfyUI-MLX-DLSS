@@ -78,25 +78,30 @@ class TensorRTEngineRunner:
         if self.engine is None:
             raise RuntimeError(f"Failed to deserialize TensorRT engine from {self.engine_path}")
 
-        self.context = self.engine.create_execution_context()
-        if self.context is None:
-            raise RuntimeError(f"Failed to create execution context for engine {self.engine_path}")
-
         self.num_profiles = self.engine.num_optimization_profiles
+        self.stream = torch.cuda.Stream(device=self.device)
+        stream_ptr = self.stream.cuda_stream
+        self.contexts = []
+        for i in range(self.num_profiles):
+            ctx = self.engine.create_execution_context()
+            if ctx is None:
+                raise RuntimeError(f"Failed to create execution context {i} for engine {self.engine_path}")
+            ctx.set_optimization_profile_async(i, stream_ptr)
+            self.contexts.append(ctx)
 
     def select_profile_for_shape(self, input_shape: Tuple[int, ...]) -> int:
         """Find the best optimization profile matching the input shape."""
         if self.num_profiles <= 1:
             return 0
         h, w = input_shape[-2], input_shape[-1]
-        mp = (h * w) / 1_000_000.0
+        max_dim = max(h, w)
 
-        if mp <= 1.2:
-            return 0  # 1 MP profile
-        elif mp <= 1.7:
-            return min(1, self.num_profiles - 1)  # 1.5 MP profile
+        if max_dim <= 672:
+            return 0  # 1 MP profile (up to 672x672 half-res)
+        elif max_dim <= 800:
+            return min(1, self.num_profiles - 1)  # 1.5 MP profile (up to 800x800 half-res)
         else:
-            return min(2, self.num_profiles - 1)  # 2.0 MP profile
+            return min(2, self.num_profiles - 1)  # 2.0 MP profile (up to 1024x1024 half-res)
 
     def __call__(
         self,
@@ -109,28 +114,29 @@ class TensorRTEngineRunner:
             input_tensor = input_tensor.to(self.device)
 
         profile_idx = self.select_profile_for_shape(tuple(input_tensor.shape))
-        if self.context.active_optimization_profile != profile_idx:
-            self.context.set_optimization_profile_async(profile_idx, torch.cuda.current_stream().cuda_stream)
+        context = self.contexts[profile_idx]
 
         # Set input tensor dimensions and pointer
-        self.context.set_input_shape(input_name, tuple(input_tensor.shape))
-        self.context.set_tensor_address(input_name, input_tensor.data_ptr())
+        context.set_input_shape(input_name, tuple(input_tensor.shape))
+        context.set_tensor_address(input_name, input_tensor.data_ptr())
 
         # Determine output shape
-        out_shape = tuple(self.context.get_tensor_shape(output_name))
+        out_shape = tuple(context.get_tensor_shape(output_name))
         out_dtype_trt = self.engine.get_tensor_dtype(output_name)
         
         import tensorrt as trt
         torch_dtype = torch.float16 if out_dtype_trt == trt.DataType.HALF else torch.float32
 
         output_tensor = torch.empty(out_shape, device=self.device, dtype=torch_dtype)
-        self.context.set_tensor_address(output_name, output_tensor.data_ptr())
+        context.set_tensor_address(output_name, output_tensor.data_ptr())
 
-        # Execute on current PyTorch CUDA stream
-        stream_ptr = torch.cuda.current_stream().cuda_stream
-        success = self.context.execute_async_v3(stream_ptr)
-        if not success:
-            raise RuntimeError(f"TensorRT execution failed on engine {self.engine_path}")
+        # Execute on dedicated CUDA stream
+        with torch.cuda.stream(self.stream):
+            stream_ptr = self.stream.cuda_stream
+            success = context.execute_async_v3(stream_ptr)
+            if not success:
+                raise RuntimeError(f"TensorRT execution failed on engine {self.engine_path} (profile {profile_idx})")
+        torch.cuda.current_stream().wait_stream(self.stream)
 
         return output_tensor
 
@@ -154,7 +160,7 @@ def build_vsr_engine(
 
     logger = trt.Logger(trt.Logger.INFO)
     builder = trt.Builder(logger)
-    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    network = builder.create_network()
     parser = trt.OnnxParser(network, logger)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -183,7 +189,6 @@ def build_vsr_engine(
                 raise RuntimeError(f"Failed to parse VSR ONNX: {errors}")
 
     config = builder.create_builder_config()
-    config.set_flag(trt.BuilderFlag.FP16)
 
     # Profile 0: 1.0 MP tier (input H//2, W//2: ~256x256 to 672x384)
     p0 = builder.create_optimization_profile()
@@ -195,9 +200,9 @@ def build_vsr_engine(
     p1.set_shape("input", min=(1, 16, 256, 256), opt=(1, 16, 640, 640), max=(4, 16, 800, 800))
     config.add_optimization_profile(p1)
 
-    # Profile 2: 2.0 MP tier (input H//2, W//2: ~720x720 to 1024x1024)
+    # Profile 2: 2.0 MP tier (input H//2, W//2: 1080p padded to 544x960 up to 1024x1024)
     p2 = builder.create_optimization_profile()
-    p2.set_shape("input", min=(1, 16, 256, 256), opt=(1, 16, 960, 540), max=(4, 16, 1024, 1024))
+    p2.set_shape("input", min=(1, 16, 256, 256), opt=(1, 16, 544, 960), max=(4, 16, 1024, 1024))
     config.add_optimization_profile(p2)
 
     # Build and serialize engine
