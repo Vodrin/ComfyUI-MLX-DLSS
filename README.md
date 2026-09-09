@@ -20,4 +20,10 @@ Place the following `.safetensors` files in `ComfyUI/models/dlss/`:
 2. `framegen.safetensors`: DLSS Frame Generation weights.
 3. `vsr.safetensors`: RTX Video Super Resolution 1.8.2 weights.
 
-## I can not share the above weights. You will need to obtain them yourself using the [iamwavecut/MLX-DLSS](https://github.com/iamwavecut/MLX-DLSS) repo
+> [!WARNING]
+> The above weights cannot be shared or distributed. You will need to obtain them yourself using the instructions in the [iamwavecut/MLX-DLSS](https://github.com/iamwavecut/MLX-DLSS) repo.
+
+## License & Attribution
+This project is licensed under the **Apache License 2.0**. See the [LICENSE](LICENSE) and [NOTICE](NOTICE) files for details.
+
+Based on the recovered inference architecture from [iamwavecut/MLX-DLSS](https://github.com/iamwavecut/MLX-DLSS) (Copyright 2026 MLX-DLSS contributors), also licensed under Apache 2.0.
